@@ -1,59 +1,101 @@
 <?php
 require_once 'funciones.php';
 
-// Habilitar visualización de errores (solo para desarrollo)
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+// Configuración inicial
+session_start();
+header('Content-Type: application/json'); // Para respuestas AJAX
 
-// Verificar si es una solicitud POST
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Validar y sanitizar los datos de entrada
-    $datos = [
-        'Matricula' => strtoupper(trim($_POST['matricula'])),
-        'Departamento' => $_POST['departamento'] ?? '',
-        'Semestre' => $_POST['semestre'] ?? '',
-        'Alerta' => $_POST['alerta'] ?? '',
-        'Estatus' => $_POST['estatus'] ?? ''
+// Función para enviar respuestas estandarizadas
+function enviarRespuesta($success, $message = '', $data = []) {
+    $response = [
+        'success' => $success,
+        'message' => $message,
+        'data' => $data
     ];
-
-    // Validación básica de campos requeridos
-    $camposRequeridos = ['Matricula', 'Departamento', 'Semestre', 'Alerta', 'Estatus'];
-    $camposFaltantes = array_filter($camposRequeridos, fn($campo) => empty($datos[$campo]));
     
-    if (!empty($camposFaltantes)) {
-        header('Location: index.php?mensaje=' . urlencode('Faltan campos requeridos: ' . implode(', ', $camposFaltantes)) . '&error=1');
+    if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
+        echo json_encode($response);
         exit;
     }
-
-    // Si es una edición, agregar el ID
-    if (isset($_POST['id']) && !empty($_POST['id'])) {
-        $datos['Id'] = $_POST['id'];
-    }
-
-    // Determinar la acción (crear o actualizar)
-    $accion = $_POST['accion'] ?? '';
-    $exito = false;
-    $mensaje = 'Acción no válida';
-
-    try {
-        if ($accion === 'crear') {
-            $exito = gestionarAlerta($datos);
-            $mensaje = $exito ? 'Alerta creada correctamente' : 'Error al crear la alerta (verifique los datos)';
-        } elseif ($accion === 'actualizar') {
-            $exito = gestionarAlerta($datos, true);
-            $mensaje = $exito ? 'Alerta actualizada correctamente' : 'Error al actualizar la alerta';
-        }
-    } catch (Exception $e) {
-        $mensaje = 'Error en el servidor: ' . $e->getMessage();
-        error_log("Error en procesar.php: " . $e->getMessage());
-    }
-
-    // Redireccionar con el resultado
-    header('Location: index.php?mensaje=' . urlencode($mensaje) . ($exito ? '' : '&error=1'));
+    
+    $_SESSION['mensaje'] = [
+        'texto' => $message,
+        'tipo' => $success ? 'exito' : 'error'
+    ];
+    
+    header('Location: index.php');
     exit;
 }
 
-// Si no es POST o no hay acción válida, redirigir
-header('Location: index.php?mensaje=' . urlencode('Acción no válida') . '&error=1');
-exit;
-?>
+// Procesamiento principal
+try {
+    // Verificar método HTTP
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        throw new Exception('Método no permitido', 405);
+    }
+
+    // Determinar acción
+    $accion = $_POST['accion'] ?? '';
+    
+    switch ($accion) {
+        case 'crear':
+        case 'actualizar':
+            // Validar y sanitizar datos
+            $datos = [
+                'Matricula' => strtoupper(trim($_POST['matricula'] ?? '')),
+                'Departamento' => $_POST['departamento'] ?? '',
+                'Semestre' => $_POST['semestre'] ?? '',
+                'Alerta' => $_POST['alerta'] ?? '',
+                'Estatus' => $_POST['estatus'] ?? ''
+            ];
+            
+            if (isset($_POST['id']) && !empty($_POST['id'])) {
+                $datos['Id'] = $_POST['id'];
+            }
+            
+            // Validar campos requeridos
+            $camposRequeridos = ['Matricula', 'Departamento', 'Semestre', 'Alerta', 'Estatus'];
+            foreach ($camposRequeridos as $campo) {
+                if (empty($datos[$campo])) {
+                    throw new Exception("El campo $campo es requerido", 400);
+                }
+            }
+            
+            // Validar formato de matrícula
+            if (!preg_match('/^[A-Z0-9]{7,8}$/', $datos['Matricula'])) {
+                throw new Exception('La matrícula debe tener 7-8 caracteres alfanuméricos', 400);
+            }
+            
+            // Procesar la alerta
+            $resultado = gestionarAlerta($datos, $accion === 'actualizar');
+            
+            if ($resultado === true) {
+                enviarRespuesta(true, $accion === 'crear' ? 'Alerta creada correctamente' : 'Alerta actualizada correctamente');
+            } else {
+                throw new Exception(is_array($resultado) ? ($resultado['error'] ?? 'Error desconocido') : 'Error al procesar la alerta');
+            }
+            break;
+            
+        case 'eliminar':
+            // Validar ID
+            $id = $_POST['id'] ?? '';
+            if (empty($id)) {
+                throw new Exception('ID de alerta no proporcionado', 400);
+            }
+            
+            // Eliminar alerta
+            if (eliminarAlerta($id)) {
+                enviarRespuesta(true, 'Alerta eliminada correctamente');
+            } else {
+                throw new Exception('Error al eliminar la alerta');
+            }
+            break;
+            
+        default:
+            throw new Exception('Acción no reconocida', 400);
+    }
+    
+} catch (Exception $e) {
+    error_log('Error en procesar.php: ' . $e->getMessage());
+    enviarRespuesta(false, $e->getMessage(), ['code' => $e->getCode()]);
+}
